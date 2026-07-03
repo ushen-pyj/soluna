@@ -56,11 +56,13 @@ function callback.window_resize(w, h)
 	screen_h = h
 end
 
-local TEXT <const> = "Hello, 这是一条很长的句子。它会在文本区居中。"
+local TEXT <const> = "[004000]Hello[n], 这个句子中有[s1]大字[n]，也有[s2]小字[n]。这句话会在文本区居中。"
 -- size 32; color 0; alignment center
 -- local block, layout = mattext.block(fontcobj, fontid, 32, 0, "CV")
 local styles = mattext.styles(fontcobj, {
-	{ font = fontid, size = 32, color = 0 },
+	{ font = fontid, size = 24, color = 0 },
+	{ font = fontid, size = 32, color = 0x800000 },
+	{ font = fontid, size = 16, color = 0x000080 },
 })
 local block, layout = mattext.block(styles, "CV")
 local label = block(TEXT, WIDTH, HEIGHT)

@@ -434,18 +434,19 @@ ltext_styles(lua_State *L) {
 }
 
 struct block_context {
+	struct styles *s;
+	struct font_style *fs;
 	int width;
 	int height;
 	int x;
 	int y;
-	int ascent;
-	int decent;
-	int gap;
+	uint32_t color;
 	int line_prim;
 	int line_width;
+	int line_ascent;
+	int line_decent;
+	int line_height;
 	int alignment;
-	uint32_t default_color;
-	uint32_t color;
 };
 
 struct position {
@@ -454,6 +455,7 @@ struct position {
 	int w;
 	int h;
 	int gap;
+	int ascent;
 	int decent;
 };
 
@@ -473,6 +475,15 @@ advance(struct layout *pos, struct block_context *ctx, int x) {
 	}
 	if (x + ctx->x > ctx->width)
 		return 1;
+	int ascent = ctx->fs->ascent;
+	if (ascent > ctx->line_ascent)
+		ctx->line_ascent = ascent;
+	int decent = ctx->fs->decent;
+	if (decent > ctx->line_decent)
+		ctx->line_decent = decent;
+	int height = ctx->fs->ascent + ctx->fs->decent - ctx->fs->gap;
+	if (height > ctx->line_height)
+		ctx->line_height = height;
 	ctx->x += x;
 	return 0;
 }
@@ -482,36 +493,59 @@ newline(struct block_context *ctx, struct text_primitive * prim, int n, struct l
 	int from = ctx->line_prim;
 	ctx->line_prim = n;
 	int line_width = ctx->line_width;
+	int line_ascent = ctx->line_ascent;
+	int line_decent = ctx->line_decent;
+	int line_height = ctx->line_height;
+	int line_gap = line_ascent + line_decent - line_height;
 	ctx->line_width = 0;
+	ctx->line_height = 0;
+	ctx->line_ascent = 0;
+	ctx->line_decent = 0;
 	int offx = 0;
 	int align = ctx->alignment & ALIGNMENT_MASK;
 	switch (align) {
 	case ALIGNMENT_CENTER:
-		offx = (ctx->width - line_width) / 2 * PIXEL_SCALE;
+		offx = (ctx->width - line_width) / 2;
 		break;
 	case ALIGNMENT_RIGHT:
-		offx = (ctx->width - line_width) * PIXEL_SCALE;
+		offx = (ctx->width - line_width);
 		break;
 	}
 
-	if (offx > 0) {
-		int i;
-		if (prim != NULL) {
+	int i;
+	if (prim != NULL) {
+		int dy = line_ascent * PIXEL_SCALE;
+		if (offx > 0) {
+			int dx = offx * PIXEL_SCALE;
 			for (i=from;i<n;i++) {
-				prim[i].pos.x += offx;
+				prim[i].pos.x += dx;
+				prim[i].pos.y += dy;
+			}
+		} else {
+			for (i=from;i<n;i++) {
+				prim[i].pos.y += dy;
 			}
 		}
-		if (pos != NULL) {
+	}
+	if (pos != NULL) {
+		if (offx > 0) {
 			for (i=from;i<n;i++) {
-				pos->pos[i].x += offx / PIXEL_SCALE;
+				pos->pos[i].x += offx;
+				pos->pos[i].h = line_height;
+				pos->pos[i].gap = line_gap;
+			}
+		} else {
+			for (i=from;i<n;i++) {
+				pos->pos[i].h = line_height;
+				pos->pos[i].gap = line_gap;
 			}
 		}
 	}
 
-	if (ctx->y + ctx->ascent + ctx->decent > ctx->height) {
+	if (ctx->y + line_ascent + line_decent > ctx->height) {
 		return 1;
 	} else {
-		ctx->y += ctx->ascent + ctx->decent;
+		ctx->y += line_ascent + line_decent;
 		ctx->x = 0;
 
 		return 0;
@@ -539,6 +573,19 @@ parse_bracket(struct block_context *ctx, const char *str, int *icon) {
 			++str;
 		}
 		*icon = num + 1;
+	} else if (c == 's') {
+		++str;
+		int style = 0;
+		while (*str >= '0' && *str <= '9') {
+			style = style * 10 + (*str - '0');
+			++str;
+		}
+		int n = ctx->s->n;
+		if (style < 0 || style >=n) {
+			style = 0;
+		}
+		ctx->fs = &ctx->s->s[style];
+		ctx->color = ctx->fs->color;
 	} else if ((hex = tohex(c)) >= 0) {
 		int color = hex;
 		for (;;) {
@@ -553,35 +600,32 @@ parse_bracket(struct block_context *ctx, const char *str, int *icon) {
 			color |= 0xff000000;
 		ctx->color = color;
 	} else if (c == 'n') {
-		ctx->color = ctx->default_color;
+		ctx->fs = &ctx->s->s[0];
+		ctx->color = ctx->fs->color;
 	}
 	// todo: other command
 	return skip_bracket(str);
 }
 
-// todo: support color
 static int
 ltext_(lua_State *L, struct styles *s, int gen_layout) {
 	const char * str = luaL_checkstring(L, 1);
 	int count = count_string(str);
 	struct block_context ctx;
+	ctx.s = s;
+	ctx.fs = &s->s[0];
 	ctx.width = luaL_optinteger(L, 2, MAX_WIDTH);
 	ctx.height = luaL_optinteger(L, 3, MAX_HEIGHT);
 
 	struct font_manager *mgr = s->font;
-	struct font_style *fs = &s->s[0];
-	int fontid = fs->fontid;
-	int fontsize = fs->size;
-	ctx.default_color = fs->color;
-	ctx.color = ctx.default_color;
 	ctx.x = 0;
-	ctx.gap = fs->gap;
-	ctx.ascent = fs->ascent;
-	ctx.decent = fs->decent;
-	
-	ctx.y = ctx.ascent;
+	ctx.color = s->s[0].color;
+	ctx.y = 0;
 	ctx.line_prim = 0;
 	ctx.line_width = 0;
+	ctx.line_ascent = 0;
+	ctx.line_decent = 0;
+	ctx.line_height = 0;
 	ctx.alignment = lua_tointeger(L, lua_upvalueindex(5));
 
 	char * buffer = NULL;
@@ -611,7 +655,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 					break;
 			} else {
 				struct font_glyph g, og;
-				if (font_manager_glyph(mgr, fontid, ' ', fontsize, &g, &og) == NULL) {
+				if (font_manager_glyph(mgr, ctx.fs->fontid, ' ', ctx.fs->size, &g, &og) == NULL) {
 					if (ctx.x > ctx.line_width)
 						ctx.line_width = ctx.x;
 					if (advance(pos, &ctx, g.advance_x)) {
@@ -635,13 +679,13 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 			}
 			int dy = 0;
 			int codepoint = val;
-			int font = fontid;
+			int font = ctx.fs->fontid;
 			
 			if (icon > 0) {
 				codepoint = icon -1;
 				font = FONT_ICON;
 				
-				dy = - ctx.ascent;
+				dy = - ctx.fs->ascent;
 			}
 			
 			if (prim) {
@@ -653,16 +697,17 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 				// assert(pos != NULL)
 				struct position *p = &pos->pos[n];
 				p->x = ctx.x;
-				p->y = ctx.y - ctx.ascent;
+				p->y = ctx.y;
 				p->w = 0;
-				p->h = ctx.ascent + ctx.decent - ctx.gap;
-				p->gap = ctx.gap;
-				p->decent = ctx.decent;
+				p->h = 0;
+				p->gap = 0;
+				p->ascent = ctx.fs->ascent;
+				p->decent = ctx.fs->decent;
 				pos->n = n + 1;
 			}
 			
 			struct font_glyph g, og;
-			if (font_manager_glyph(mgr, font, codepoint, fontsize, &g, &og) == NULL) {
+			if (font_manager_glyph(mgr, font, codepoint, ctx.fs->size, &g, &og) == NULL) {
 				if (ctx.x > ctx.line_width)
 					ctx.line_width = ctx.x;
 				if (advance(pos, &ctx, g.advance_x)) {
@@ -674,11 +719,12 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 					} else {
 						struct position *p = &pos->pos[n];
 						p->x = ctx.x;
-						p->y = ctx.y - ctx.ascent;
+						p->y = ctx.y;
 						p->w = 0;
-						p->h = ctx.ascent + ctx.decent - ctx.gap;
-						p->gap = ctx.gap;
-						p->decent = ctx.decent;
+						p->h = 0;
+						p->gap = 0;
+						p->ascent = ctx.fs->ascent;
+						p->decent = ctx.fs->decent;
 					}
 					advance(pos, &ctx, g.advance_x);
 				}
@@ -686,7 +732,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 					prim[n].u.text.header.sprite = -1;
 					prim[n].u.text.codepoint = codepoint;
 					prim[n].u.text.font = font;
-					prim[n].u.text.size = fontsize;
+					prim[n].u.text.size = ctx.fs->size;
 					prim[n].u.text.color = ctx.color;
 				}
 				++n;
@@ -696,7 +742,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 	}
 	if (ctx.x > ctx.line_width)
 		ctx.line_width = ctx.x;
-	int height = ctx.y + ctx.decent - ctx.gap;
+	int height = ctx.y + ctx.line_height;
 	if (n == 0 && pos) {
 		// no text, set one
 		if (pos) {
@@ -704,9 +750,14 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 			p->x = 0;
 			p->y = 0;
 			p->w = 0;
-			p->h = ctx.ascent + ctx.decent - ctx.gap;
-			p->gap = ctx.gap;
-			p->decent = ctx.decent;
+			p->h = 0;
+			p->gap = 0;
+			p->ascent = ctx.fs->ascent;
+			p->decent = ctx.fs->decent;
+			ctx.line_ascent = ctx.fs->ascent;
+			ctx.line_decent = ctx.fs->decent;
+			ctx.line_height = ctx.fs->ascent + ctx.fs->decent - ctx.fs->gap;
+			height = ctx.y + ctx.line_height;
 		}
 		newline(&ctx, prim, 1, pos);
 	} else {
@@ -795,12 +846,14 @@ ltext_cursor(lua_State *L) {
 	} else if (n > pos->n ) {
 		n = pos->n;
 	}
-	lua_pushinteger(L, pos->pos[n].x);
-	lua_pushinteger(L, pos->pos[n].y);
+	struct position *p = &pos->pos[n];
+	int height = p->ascent + p->decent - p->gap;
+	lua_pushinteger(L, p->x);
+	lua_pushinteger(L, p->y + p->h - height);
 	lua_pushinteger(L, 2);
-	lua_pushinteger(L, pos->pos[n].h);
+	lua_pushinteger(L, height);
 	lua_pushinteger(L, n);
-	lua_pushinteger(L, pos->pos[n].decent);
+	lua_pushinteger(L, p->decent);
 	return 6;
 }
 
