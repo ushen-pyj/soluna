@@ -347,7 +347,92 @@ free_primitive(void *ud, void *ptr, size_t osize, size_t nsize) {
 #define VALIGNMENT_BOTTOM (2<<2)
 #define VALIGNMENT_MASK (3<<2)
 
-// todo: support multi font/size
+struct font_style {
+	uint32_t color;
+	int fontid;
+	int size;
+	// read from font
+	int ascent;
+	int decent;
+	int gap;
+};
+
+struct styles {
+	struct font_manager *font;
+	int n;
+	struct font_style s[1];
+};
+
+static int
+get_field(lua_State *L, const char *key, int def) {
+	int t = lua_getfield(L, -1, key);
+	if (t == LUA_TNIL) {
+		return def;
+	} else if (t != LUA_TNUMBER) {
+		return luaL_error(L, ".%s should be integer", key);
+	}
+	int isnum;
+	int v = lua_tointegerx(L, -1, &isnum);
+	if (!isnum)
+		return luaL_error(L, ".%s should be integer", key);
+	lua_pop(L, 1);
+	return v;
+}
+
+static void
+read_style(lua_State *L, int index, struct styles *s, int i) {
+	struct font_style *fs = &s->s[i];
+	if (lua_geti(L, index, i+1) != LUA_TTABLE) {
+		luaL_error(L, "Invalid style at %d, need a table", i+1);
+	}
+	fs->fontid = get_field(L, "font", -1);
+	if (fs->fontid < 0)
+		luaL_error(L, "Invalid .font");
+	fs->color = get_field(L, "color", 0xff000000);
+	if (!(fs->color & 0xff000000))
+		fs->color |= 0xff000000;
+	fs->size = get_field(L, "size", DEFAULT_FONTSIZE);
+	lua_pop(L, 1);
+}
+
+static void
+style_getinfo(struct styles *s) {
+	struct font_manager *mgr = s->font;
+	int i;
+	for (i=0;i<s->n;i++) {
+		int ascent, decent, gap;
+		struct font_style *fs = &s->s[i];
+		font_manager_fontheight(mgr, fs->fontid, fs->size, &ascent, &decent, &gap);
+		if (gap == 0)
+			gap = 1;
+		fs->ascent = ascent;
+		fs->decent = -decent + gap;
+		fs->gap = gap;
+	}
+}
+
+static int
+ltext_styles(lua_State *L) {
+	luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+	struct font_manager *mgr = (struct font_manager *)lua_touserdata(L, 1);
+	luaL_checktype(L, 2, LUA_TTABLE);
+	lua_len(L, 2);
+	int n = lua_tointeger(L, -1);
+	lua_pop(L, 1);
+	if (n <= 0) {
+		return luaL_error(L, "At least one style");
+	}
+	struct styles * s = (struct styles *)lua_newuserdatauv(L, sizeof(struct styles) + (n-1) * sizeof(struct font_style), 0);
+	s->font = mgr;
+	s->n = n;
+	int i;
+	for (i=0;i<n;i++) {
+		read_style(L, 2, s, i);
+	}
+	style_getinfo(s);
+	return 1;
+}
+
 struct block_context {
 	int width;
 	int height;
@@ -355,6 +440,7 @@ struct block_context {
 	int y;
 	int ascent;
 	int decent;
+	int gap;
 	int line_prim;
 	int line_width;
 	int alignment;
@@ -366,6 +452,9 @@ struct position {
 	int x;
 	int y;
 	int w;
+	int h;
+	int gap;
+	int decent;
 };
 
 struct layout {
@@ -373,11 +462,7 @@ struct layout {
 	int width;
 	int height;
 	int top;
-	int line_height;
-	int line_gap;
 	int text_height;
-	int ascent;
-	int decent;
 	struct position pos[];
 };
 
@@ -476,23 +561,24 @@ parse_bracket(struct block_context *ctx, const char *str, int *icon) {
 
 // todo: support color
 static int
-ltext_(lua_State *L, int gen_layout) {
+ltext_(lua_State *L, struct styles *s, int gen_layout) {
 	const char * str = luaL_checkstring(L, 1);
 	int count = count_string(str);
 	struct block_context ctx;
 	ctx.width = luaL_optinteger(L, 2, MAX_WIDTH);
 	ctx.height = luaL_optinteger(L, 3, MAX_HEIGHT);
-	struct font_manager *mgr = (struct font_manager *)lua_touserdata(L, lua_upvalueindex(1));
-	int fontid = lua_tointeger(L, lua_upvalueindex(2));
-	int fontsize = lua_tointeger(L, lua_upvalueindex(3));
-	ctx.default_color = lua_tointeger(L, lua_upvalueindex(4));
+
+	struct font_manager *mgr = s->font;
+	struct font_style *fs = &s->s[0];
+	int fontid = fs->fontid;
+	int fontsize = fs->size;
+	ctx.default_color = fs->color;
 	ctx.color = ctx.default_color;
 	ctx.x = 0;
-	int decent, gap;
-	font_manager_fontheight(mgr, fontid, fontsize, &ctx.ascent, &decent, &gap);
-	if (gap == 0)
-		gap = 1;
-	ctx.decent = -decent + gap;
+	ctx.gap = fs->gap;
+	ctx.ascent = fs->ascent;
+	ctx.decent = fs->decent;
+	
 	ctx.y = ctx.ascent;
 	ctx.line_prim = 0;
 	ctx.line_width = 0;
@@ -508,10 +594,6 @@ ltext_(lua_State *L, int gen_layout) {
 		pos->height = ctx.height;
 		pos->text_height = 0;
 		pos->top = 0;
-		pos->line_height = ctx.ascent + ctx.decent - gap;
-		pos->line_gap = gap;
-		pos->ascent = ctx.ascent;
-		pos->decent = ctx.decent;
 	} else {
 		buffer = (char *)malloc(count * sizeof(struct text_primitive)+1);
 		prim = (struct text_primitive *)buffer;
@@ -571,8 +653,11 @@ ltext_(lua_State *L, int gen_layout) {
 				// assert(pos != NULL)
 				struct position *p = &pos->pos[n];
 				p->x = ctx.x;
-				p->y = ctx.y + dy;
+				p->y = ctx.y - ctx.ascent;
 				p->w = 0;
+				p->h = ctx.ascent + ctx.decent - ctx.gap;
+				p->gap = ctx.gap;
+				p->decent = ctx.decent;
 				pos->n = n + 1;
 			}
 			
@@ -589,8 +674,11 @@ ltext_(lua_State *L, int gen_layout) {
 					} else {
 						struct position *p = &pos->pos[n];
 						p->x = ctx.x;
-						p->y = ctx.y + dy;
+						p->y = ctx.y - ctx.ascent;
 						p->w = 0;
+						p->h = ctx.ascent + ctx.decent - ctx.gap;
+						p->gap = ctx.gap;
+						p->decent = ctx.decent;
 					}
 					advance(pos, &ctx, g.advance_x);
 				}
@@ -608,12 +696,25 @@ ltext_(lua_State *L, int gen_layout) {
 	}
 	if (ctx.x > ctx.line_width)
 		ctx.line_width = ctx.x;
-	int height = ctx.y + ctx.decent - gap;
-
-	newline(&ctx, prim, n, pos);
-	if (pos && n > 0) {
+	int height = ctx.y + ctx.decent - ctx.gap;
+	if (n == 0 && pos) {
+		// no text, set one
+		if (pos) {
+			struct position *p = &pos->pos[0];
+			p->x = 0;
+			p->y = 0;
+			p->w = 0;
+			p->h = ctx.ascent + ctx.decent - ctx.gap;
+			p->gap = ctx.gap;
+			p->decent = ctx.decent;
+		}
+		newline(&ctx, prim, 1, pos);
+	} else {
+		newline(&ctx, prim, n, pos);
+	}
+	if (pos && n>0) {
+		pos->pos[n] = pos->pos[n-1];
 		pos->pos[n].x = pos->pos[n-1].x + pos->pos[n-1].w;
-		pos->pos[n].y = pos->pos[n-1].y;
 		pos->pos[n].w = 0;
 	}
 	int offy;
@@ -639,13 +740,11 @@ ltext_(lua_State *L, int gen_layout) {
 		lua_pushinteger(L, height);
 		return 2;
 	} else {
-		if (n > 0)
-			++n;
 		pos->text_height = height;
 		pos->n = n;
 		if (offy != 0) {
-			int offset = offy / PIXEL_SCALE - ctx.ascent;
-			for (i=0;i<n;i++) {
+			int offset = offy / PIXEL_SCALE;
+			for (i=0;i<=n;i++) {
 				pos->pos[i].y += offset;
 			}
 			pos->top = offset;
@@ -654,14 +753,34 @@ ltext_(lua_State *L, int gen_layout) {
 	}
 }
 
+static struct styles *
+get_styles(lua_State *L, struct styles *tmp) {
+	void * ptr = lua_touserdata(L, lua_upvalueindex(1));
+	int fontid = lua_tointeger(L, lua_upvalueindex(2));
+	if (fontid == 0) {
+		return (struct styles *)ptr;
+	}
+	tmp->font = (struct font_manager *)ptr;
+	tmp->n = 1;
+	struct font_style *fs = &tmp->s[0];
+	fs->fontid = fontid;
+	fs->size = lua_tointeger(L, lua_upvalueindex(3));
+	fs->color = lua_tointeger(L, lua_upvalueindex(4));
+
+	style_getinfo(tmp);
+	return tmp;
+}
+
 static int
 ltext(lua_State *L) {
-	return ltext_(L, 0);
+	struct styles tmp;
+	return ltext_(L, get_styles(L, &tmp), 0);
 }
 
 static int
 ltext_layout(lua_State *L) {
-	ltext_(L, 1);
+	struct styles tmp;
+	ltext_(L, get_styles(L, &tmp), 1);
 	lua_pushvalue(L, lua_upvalueindex(6));
 	lua_setmetatable(L, -2);
 	return 1;
@@ -673,15 +792,15 @@ ltext_cursor(lua_State *L) {
 	int n = luaL_checkinteger(L, 2);
 	if (n < 0) {
 		n = 0;
-	} else if (n >= pos->n ) {
-		n = pos->n - 1;
+	} else if (n > pos->n ) {
+		n = pos->n;
 	}
 	lua_pushinteger(L, pos->pos[n].x);
 	lua_pushinteger(L, pos->pos[n].y);
 	lua_pushinteger(L, 2);
-	lua_pushinteger(L, pos->line_height);
+	lua_pushinteger(L, pos->pos[n].h);
 	lua_pushinteger(L, n);
-	lua_pushinteger(L, pos->decent);
+	lua_pushinteger(L, pos->pos[n].decent);
 	return 6;
 }
 
@@ -698,14 +817,13 @@ get_pos(lua_State *L, int index) {
 static int
 bsearch_pos(struct layout * pos, int x, int y) {
 	int from = 0;
-	int to = pos->n - 1;
-	int advance_y = pos->line_height + pos->line_gap;
+	int to = pos->n;
 	while (from < to) {
 		int mid = from + (to - from) / 2;
 		struct position *p = &pos->pos[mid];
 		if (y < p->y) {
 			to = mid;
-		} else if (y >= p->y + advance_y) {
+		} else if (y >= p->y + p->h + p->gap) {
 			from = mid + 1;
 		} else if (x < p->x) {
 			to = mid;
@@ -723,7 +841,7 @@ ltext_hit_test(lua_State *L) {
 	struct layout * pos = (struct layout *)lua_touserdata(L, 1);
 	int x = get_pos(L, 2);
 	int y = get_pos(L, 3);
-	int top = pos->top + pos->ascent;
+	int top = pos->top;
 	if (y < top) {
 		lua_pushinteger(L, 0);
 		lua_pushboolean(L, y < 0);	// out of box
@@ -782,17 +900,29 @@ ltext_block(lua_State *L) {
 	if (material_id <= 0) {
 		return luaL_error(L, "Text material is not registered");
 	}
-	luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
 	void * font_mgr = lua_touserdata(L, 1);
-	int fontid = luaL_checkinteger(L, 2);
-	int fontsize = luaL_optinteger(L, 3, DEFAULT_FONTSIZE);
-	uint32_t color = luaL_optinteger(L, 4, 0xff000000);
+	int fontid = 0;
+	int fontsize = 0;
+	uint32_t color = 0;
 	uint32_t alignment = 0;
-	if (lua_type(L, 5) == LUA_TSTRING) {
-		alignment = parse_alignment(L, 5);
+	
+	if (lua_type(L, 2) == LUA_TSTRING) {
+		// font_mgr is struct styles
+		luaL_checktype(L, 1, LUA_TUSERDATA);
+		alignment = parse_alignment(L, 2);
+	} else {
+		luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+		fontid = luaL_checkinteger(L, 2);
+		fontsize = luaL_optinteger(L, 3, DEFAULT_FONTSIZE);
+		color = luaL_optinteger(L, 4, 0xff000000);
+		
+		if (lua_type(L, 5) == LUA_TSTRING) {
+			alignment = parse_alignment(L, 5);
+		}
+		if (!(color & 0xff000000))
+			color |= 0xff000000;
 	}
-	if (!(color & 0xff000000))
-		color |= 0xff000000;
+
 	lua_pushlightuserdata(L, font_mgr);	// 1
 	lua_pushinteger(L, fontid);	// 2
 	lua_pushinteger(L, fontsize);	// 3
@@ -818,6 +948,7 @@ luaopen_material_text(lua_State *L) {
 		{ "block", ltext_block },
 		{ "normal", lnew_material_text_normal },
 		{ "instance_size", NULL },
+		{ "styles", ltext_styles },
 		{ NULL, NULL },
 	};
 	luaL_newlib(L, l);

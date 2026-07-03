@@ -58,7 +58,11 @@ end
 
 local TEXT <const> = "Hello, 这是一条很长的句子。它会在文本区居中。"
 -- size 32; color 0; alignment center
-local block, layout = mattext.block(fontcobj, fontid, 32, 0, "CV")
+-- local block, layout = mattext.block(fontcobj, fontid, 32, 0, "CV")
+local styles = mattext.styles(fontcobj, {
+	{ font = fontid, size = 32, color = 0 },
+})
+local block, layout = mattext.block(styles, "CV")
 local label = block(TEXT, WIDTH, HEIGHT)
 local label_layout = layout(TEXT, WIDTH, HEIGHT)
 
