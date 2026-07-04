@@ -351,6 +351,7 @@ struct font_style {
 	uint32_t color;
 	int fontid;
 	int size;
+	int line_height;
 	// read from font
 	int ascent;
 	int decent;
@@ -367,6 +368,7 @@ static int
 get_field(lua_State *L, const char *key, int def) {
 	int t = lua_getfield(L, -1, key);
 	if (t == LUA_TNIL) {
+		lua_pop(L, 1);
 		return def;
 	} else if (t != LUA_TNUMBER) {
 		return luaL_error(L, ".%s should be integer", key);
@@ -392,6 +394,7 @@ read_style(lua_State *L, int index, struct styles *s, int i) {
 	if (!(fs->color & 0xff000000))
 		fs->color |= 0xff000000;
 	fs->size = get_field(L, "size", DEFAULT_FONTSIZE);
+	fs->line_height = get_field(L, "line_height", 0);
 	lua_pop(L, 1);
 }
 
@@ -405,9 +408,19 @@ style_getinfo(struct styles *s) {
 		font_manager_fontheight(mgr, fs->fontid, fs->size, &ascent, &decent, &gap);
 		if (gap == 0)
 			gap = 1;
+		int natural_height = ascent - decent;
 		fs->ascent = ascent;
-		fs->decent = -decent + gap;
-		fs->gap = gap;
+		if (fs->line_height > 0) {
+			if (fs->line_height < natural_height) {
+				fs->line_height = natural_height;
+			}
+			fs->decent = fs->line_height - ascent;
+			fs->gap = 0;
+		} else {
+			fs->line_height = natural_height;
+			fs->decent = -decent + gap;
+			fs->gap = gap;
+		}
 	}
 }
 
@@ -436,6 +449,7 @@ ltext_styles(lua_State *L) {
 struct block_context {
 	struct styles *s;
 	struct font_style *fs;
+	int style;
 	int width;
 	int height;
 	int x;
@@ -457,6 +471,7 @@ struct position {
 	int gap;
 	int ascent;
 	int decent;
+	int style;
 };
 
 struct layout {
@@ -584,6 +599,7 @@ parse_bracket(struct block_context *ctx, const char *str, int *icon) {
 		if (style < 0 || style >=n) {
 			style = 0;
 		}
+		ctx->style = style;
 		ctx->fs = &ctx->s->s[style];
 		ctx->color = ctx->fs->color;
 	} else if ((hex = tohex(c)) >= 0) {
@@ -600,6 +616,7 @@ parse_bracket(struct block_context *ctx, const char *str, int *icon) {
 			color |= 0xff000000;
 		ctx->color = color;
 	} else if (c == 'n') {
+		ctx->style = 0;
 		ctx->fs = &ctx->s->s[0];
 		ctx->color = ctx->fs->color;
 	}
@@ -614,6 +631,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 	struct block_context ctx;
 	ctx.s = s;
 	ctx.fs = &s->s[0];
+	ctx.style = 0;
 	ctx.width = luaL_optinteger(L, 2, MAX_WIDTH);
 	ctx.height = luaL_optinteger(L, 3, MAX_HEIGHT);
 
@@ -703,6 +721,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 				p->gap = 0;
 				p->ascent = ctx.fs->ascent;
 				p->decent = ctx.fs->decent;
+				p->style = ctx.style;
 				pos->n = n + 1;
 			}
 			
@@ -725,6 +744,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 						p->gap = 0;
 						p->ascent = ctx.fs->ascent;
 						p->decent = ctx.fs->decent;
+						p->style = ctx.style;
 					}
 					advance(pos, &ctx, g.advance_x);
 				}
@@ -754,6 +774,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 			p->gap = 0;
 			p->ascent = ctx.fs->ascent;
 			p->decent = ctx.fs->decent;
+			p->style = ctx.style;
 			ctx.line_ascent = ctx.fs->ascent;
 			ctx.line_decent = ctx.fs->decent;
 			ctx.line_height = ctx.fs->ascent + ctx.fs->decent - ctx.fs->gap;
@@ -817,6 +838,7 @@ get_styles(lua_State *L, struct styles *tmp) {
 	fs->fontid = fontid;
 	fs->size = lua_tointeger(L, lua_upvalueindex(3));
 	fs->color = lua_tointeger(L, lua_upvalueindex(4));
+	fs->line_height = 0;
 
 	style_getinfo(tmp);
 	return tmp;
@@ -855,6 +877,164 @@ ltext_cursor(lua_State *L) {
 	lua_pushinteger(L, n);
 	lua_pushinteger(L, p->decent);
 	return 6;
+}
+
+static int
+ltext_height(lua_State *L) {
+	struct layout * pos = (struct layout *)lua_touserdata(L, 1);
+	lua_pushinteger(L, pos->text_height);
+	return 1;
+}
+
+static int
+ltext_line_height(lua_State *L) {
+	struct layout * pos = (struct layout *)lua_touserdata(L, 1);
+	int n = pos->n;
+	if (n <= 0) {
+		lua_pushinteger(L, pos->text_height);
+		return 1;
+	}
+	int height = 0;
+	int bottom = pos->top + pos->text_height;
+	int i;
+	for (i=0;i<n;i++) {
+		struct position *p = &pos->pos[i];
+		int line_height = p->h + p->gap;
+		if (p->y + line_height > bottom) {
+			line_height = bottom - p->y;
+		}
+		if (line_height > height) {
+			height = line_height;
+		}
+	}
+	lua_pushinteger(L, height);
+	return 1;
+}
+
+static int
+ltext_line_count(lua_State *L) {
+	struct layout * pos = (struct layout *)lua_touserdata(L, 1);
+	int n = pos->n;
+	if (n <= 0) {
+		lua_pushinteger(L, pos->text_height > 0 ? 1 : 0);
+		return 1;
+	}
+	int count = 1;
+	int y = pos->pos[0].y;
+	int i;
+	for (i=1;i<n;i++) {
+		if (pos->pos[i].y != y) {
+			y = pos->pos[i].y;
+			++count;
+		}
+	}
+	lua_pushinteger(L, count);
+	return 1;
+}
+
+static int
+ltext_cursor_count(lua_State *L) {
+	struct layout * pos = (struct layout *)lua_touserdata(L, 1);
+	lua_pushinteger(L, pos->n + 1);
+	return 1;
+}
+
+static void
+set_integer_field(lua_State *L, const char *key, int value) {
+	lua_pushinteger(L, value);
+	lua_setfield(L, -2, key);
+}
+
+static void
+push_line(lua_State *L, struct layout *pos, int start, int finish) {
+	int x0 = pos->pos[start].x;
+	int x1 = x0;
+	int y = pos->pos[start].y;
+	int y1 = y;
+	int text_bottom = pos->top + pos->text_height;
+	int i;
+	for (i=start;i<finish;i++) {
+		struct position *p = &pos->pos[i];
+		if (p->x < x0) {
+			x0 = p->x;
+		}
+		int right = p->x + p->w;
+		if (right > x1) {
+			x1 = right;
+		}
+		int bottom = p->y + p->h + p->gap;
+		if (bottom > y1) {
+			y1 = bottom;
+		}
+	}
+	if (y1 > text_bottom) {
+		y1 = text_bottom;
+	}
+	lua_createtable(L, 0, 6);
+	set_integer_field(L, "start", start);
+	set_integer_field(L, "finish", finish);
+	set_integer_field(L, "x", x0);
+	set_integer_field(L, "y", y);
+	set_integer_field(L, "width", x1 - x0);
+	set_integer_field(L, "height", y1 > y ? y1 - y : 0);
+}
+
+static int
+ltext_line(lua_State *L) {
+	struct layout * pos = (struct layout *)lua_touserdata(L, 1);
+	int line = luaL_checkinteger(L, 2);
+	if (line <= 0) {
+		lua_pushnil(L);
+		return 1;
+	}
+	int n = pos->n;
+	if (n <= 0) {
+		if (line != 1) {
+			lua_pushnil(L);
+			return 1;
+		}
+		lua_createtable(L, 0, 6);
+		set_integer_field(L, "start", 0);
+		set_integer_field(L, "finish", 0);
+		set_integer_field(L, "x", 0);
+		set_integer_field(L, "y", pos->top);
+		set_integer_field(L, "width", 0);
+		set_integer_field(L, "height", pos->text_height);
+		return 1;
+	}
+	int current_line = 1;
+	int start = 0;
+	int y = pos->pos[0].y;
+	int i;
+	for (i=1;i<n;i++) {
+		if (pos->pos[i].y != y) {
+			if (current_line == line) {
+				push_line(L, pos, start, i);
+				return 1;
+			}
+			++current_line;
+			start = i;
+			y = pos->pos[i].y;
+		}
+	}
+	if (current_line == line) {
+		push_line(L, pos, start, n);
+		return 1;
+	}
+	lua_pushnil(L);
+	return 1;
+}
+
+static int
+ltext_style(lua_State *L) {
+	struct layout * pos = (struct layout *)lua_touserdata(L, 1);
+	int n = luaL_checkinteger(L, 2);
+	if (n < 0 || n >= pos->n) {
+		lua_pushnil(L);
+		return 1;
+	}
+	lua_pushinteger(L, pos->pos[n].style);
+	return 1;
 }
 
 static int
@@ -901,7 +1081,7 @@ ltext_hit_test(lua_State *L) {
 		return 2;
 	}
 	if (y - top >= pos->text_height) {
-		lua_pushinteger(L, pos->n-1);
+		lua_pushinteger(L, pos->n);
 		lua_pushboolean(L, y >= pos->height);	// out of box
 		return 2;
 	}
@@ -1008,8 +1188,14 @@ luaopen_material_text(lua_State *L) {
 	
 	if (luaL_newmetatable(L, "SOLUNA_TEXT_LAYOUT")) {
 		luaL_Reg meta[] = {
+			{ "height", ltext_height },
+			{ "line_height", ltext_line_height },
+			{ "line_count", ltext_line_count },
+			{ "cursor_count", ltext_cursor_count },
+			{ "line", ltext_line },
 			{ "cursor", ltext_cursor },
 			{ "hit_test", ltext_hit_test },
+			{ "style", ltext_style },
 			{ NULL, NULL },
 		};
 		luaL_setfuncs(L, meta, 0);
