@@ -1138,6 +1138,7 @@ ltext_block(lua_State *L) {
 		return luaL_error(L, "Text material is not registered");
 	}
 	void * font_mgr = lua_touserdata(L, 1);
+	int styles_arg = 0;
 	int fontid = 0;
 	int fontsize = 0;
 	uint32_t color = 0;
@@ -1146,6 +1147,7 @@ ltext_block(lua_State *L) {
 	if (lua_type(L, 2) == LUA_TSTRING) {
 		// font_mgr is struct styles
 		luaL_checktype(L, 1, LUA_TUSERDATA);
+		styles_arg = 1;
 		alignment = parse_alignment(L, 2);
 	} else {
 		luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
@@ -1160,13 +1162,21 @@ ltext_block(lua_State *L) {
 			color |= 0xff000000;
 	}
 
-	lua_pushlightuserdata(L, font_mgr);	// 1
+	if (styles_arg) {
+		lua_pushvalue(L, 1);
+	} else {
+		lua_pushlightuserdata(L, font_mgr);
+	}
 	lua_pushinteger(L, fontid);	// 2
 	lua_pushinteger(L, fontsize);	// 3
 	lua_pushinteger(L, color);	// 4
 	lua_pushinteger(L, alignment);	// 5
 	lua_pushcclosure(L, ltext, 5);
-	lua_pushlightuserdata(L, font_mgr);	// 1
+	if (styles_arg) {
+		lua_pushvalue(L, 1);
+	} else {
+		lua_pushlightuserdata(L, font_mgr);
+	}
 	lua_pushinteger(L, fontid);	// 2
 	lua_pushinteger(L, fontsize);	// 3
 	lua_pushinteger(L, color);	// 4

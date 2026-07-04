@@ -63,12 +63,18 @@ end
 local TEXT <const> = "[004000]Hello[n], 这个句子中有[s1]大字[n]，也有[s2]小字[n]。这句话会在文本区居中。"
 -- size 32; color 0; alignment center
 -- local block, layout = mattext.block(fontcobj, fontid, 32, 0, "CV")
-local styles = mattext.styles(fontcobj, {
-	{ font = fontid, size = 24, color = 0 },
-	{ font = fontid, size = 32, color = 0x800000 },
-	{ font = fontid, size = 16, color = 0x000080 },
-})
-local block, layout = mattext.block(styles, "CV")
+local function text_block()
+	local styles = mattext.styles(fontcobj, {
+		{ font = fontid, size = 24, color = 0 },
+		{ font = fontid, size = 32, color = 0x800000 },
+		{ font = fontid, size = 16, color = 0x000080 },
+	})
+	return mattext.block(styles, "CV")
+end
+
+local block, layout = text_block()
+-- Verify block closures keep the local styles object alive.
+collectgarbage "collect"
 local label = block(TEXT, WIDTH, HEIGHT)
 local label_layout = layout(TEXT, WIDTH, HEIGHT)
 
@@ -142,24 +148,25 @@ function callback.frame(count)
 	batch:add(matclip.rect(WIDTH + CLIP_BLEED * 2, clip_h), x - CLIP_BLEED, y)
 	draw_selection(x, y)
 	batch:add(label, x, y)
+	-- cursor
 	local cx, cy, cw, ch, n = label_layout:cursor(cursor_pos)
 	cursor_pos = n
-	batch:add(matquad.quad(cw, ch, 0xffffff), x + cx, y + cy)
+	batch:add(matquad.quad(cw, ch, 0xffffff), cx + x, cy + y)
 	batch:add(matclip.rect())
 end
 
 function callback.key(keycode, state)
-	if state ~= 1 then
-		return
-	end
-	if keycode == 262 then
-		cursor_pos = cursor_pos + 1
-	elseif keycode == 263 then
-		cursor_pos = cursor_pos - 1
-	else
-		print(keycode)
+	if state == 1 then         -- press
+		if keycode == 262 then -- right
+			cursor_pos = cursor_pos + 1
+		elseif keycode == 263 then -- left
+			cursor_pos = cursor_pos - 1
+		else
+			print(keycode)
+		end
 	end
 end
+
 
 local mouse_x = 0
 local mouse_y = 0
