@@ -1,11 +1,10 @@
 name: GitHub Pages
 
 on:
-  workflow_run:
-    workflows:
-      - Nightly Build
-    types:
-      - completed
+  push:
+    branches:
+      - master
+  pull_request:
     branches:
       - master
   workflow_dispatch:
@@ -14,33 +13,31 @@ on:
         description: 'Whether to build in debug mode'
         required: false
         default: 'false'
+  schedule:
+    - cron: '0 0 * * *'  # Runs every day at midnight UTC
 
 jobs:
   build:
     name: Build Web Site
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     concurrency:
-      group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch || github.ref }}
+      group: ${{ github.workflow }}-${{ github.ref }}
     permissions:
       contents: read
       pages: write
       id-token: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Build Soluna
         uses: ./.github/actions/soluna
         id: build
         with:
           soluna_path: "."
-          debug: ${{ github.event.inputs.debug }}
+          debug: ${{ github.event.inputs.debug || 'false' }}
 
       - name: Build Sample
         uses: ./.github/actions/sample
@@ -65,10 +62,7 @@ jobs:
 
   deploy:
     name: Deploy to GitHub Pages
-    if: |
-      (github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')) &&
-      github.actor != 'nektos/act'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master' && github.actor != 'nektos/act'
     needs: [build]
     runs-on: ubuntu-latest
     permissions:
@@ -80,4 +74,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

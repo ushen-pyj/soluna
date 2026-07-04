@@ -38,7 +38,7 @@ runs:
         echo "commit=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
       shell: bash
     - name: Cache soluna build
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       id: cache
       with:
         path: ${{ inputs.soluna_path }}/bin
@@ -122,11 +122,11 @@ runs:
           export LUAMAKE_BUILD_TYPE=release
         fi
         "${{ steps.luamake.outputs.path }}" -mode $LUAMAKE_BUILD_TYPE soluna
-    - uses: mymindstorm/setup-emsdk@v14
+    - uses: emscripten-core/setup-emsdk@v16
       if: runner.os == 'Linux' && steps.cache.outputs.cache-hit != 'true'
       with:
         version: 4.0.17
-        actions-cache-folder: 'emsdk-cache'
+        actions-cache-folder: emsdk-cache
     - name: Build Emscripten
       if: runner.os == 'Linux' && steps.cache.outputs.cache-hit != 'true'
       working-directory: ${{ inputs.soluna_path }}

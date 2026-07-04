@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import process from 'node:process'
 
 export interface ExampleRuntimeFile {
   path: string
@@ -29,7 +29,7 @@ export interface DocEntry {
   blocks: DocBlock[]
 }
 
-const repoRoot = path.resolve(fileURLToPath(new URL('../../..', import.meta.url)))
+const repoRoot = path.resolve(process.cwd(), '..')
 const testDir = path.join(repoRoot, 'test')
 const docsDir = path.join(repoRoot, 'docs')
 
