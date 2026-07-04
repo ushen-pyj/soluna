@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "sokol/sokol_app.h"
 #include "sokol/sokol_gfx.h"
 #include "batch.h"
 #include "material_util.h"
@@ -74,7 +75,14 @@ intersect_scissor(struct scissor_rect a, struct scissor_rect b) {
 
 static void
 apply_scissor(struct scissor_rect r) {
-	sg_apply_scissor_rect(r.x, r.y, r.w, r.h, true);
+	float scale = sapp_dpi_scale();
+	if (scale <= 0.0f)
+		scale = 1.0f;
+	int x0 = (int)floorf((float)r.x * scale);
+	int y0 = (int)floorf((float)r.y * scale);
+	int x1 = (int)ceilf((float)(r.x + r.w) * scale);
+	int y1 = (int)ceilf((float)(r.y + r.h) * scale);
+	sg_apply_scissor_rect(x0, y0, x1 > x0 ? x1 - x0 : 0, y1 > y0 ? y1 - y0 : 0, true);
 }
 
 static void
