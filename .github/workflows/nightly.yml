@@ -18,12 +18,12 @@ jobs:
     outputs:
       proceed: ${{ steps.check.outputs.proceed }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Get the last nightly commit
         id: last_nightly
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const releases = await github.rest.repos.listReleases({
@@ -71,7 +71,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: ./.github/actions/soluna
@@ -79,7 +79,7 @@ jobs:
         id: build
         with:
           soluna_path: "."
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         name: Upload
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
         with:
@@ -87,7 +87,7 @@ jobs:
           if-no-files-found: "error"
           path: "${{ steps.build.outputs.SOLUNA_PATH }}"
           overwrite: "true"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         name: Upload Emscripten
         if: (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && runner.os == 'Linux'
         with:
@@ -105,9 +105,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
       - name: Prepare release assets
@@ -116,7 +116,7 @@ jobs:
           find artifacts -type f -name "soluna*" -exec cp {} release-assets/ \;
           ls -la release-assets/
       - name: Delete existing nightly releases
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const releases = await github.rest.repos.listReleases({
@@ -151,7 +151,7 @@ jobs:
             }
       - name: Create nightly release
         id: create-release
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
@@ -183,7 +183,7 @@ jobs:
             console.log(`Created release: ${data.html_url}`);
             return data.id;
       - name: Upload release assets
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
