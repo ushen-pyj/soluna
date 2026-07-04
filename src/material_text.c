@@ -408,17 +408,21 @@ style_getinfo(struct styles *s) {
 		font_manager_fontheight(mgr, fs->fontid, fs->size, &ascent, &decent, &gap);
 		if (gap == 0)
 			gap = 1;
-		int natural_height = ascent - decent;
-		fs->ascent = ascent;
+		int natural_decent = -decent;
+		int natural_height = ascent + natural_decent;
 		if (fs->line_height > 0) {
 			if (fs->line_height < natural_height) {
 				fs->line_height = natural_height;
 			}
-			fs->decent = fs->line_height - ascent;
+			int leading = fs->line_height - natural_height;
+			int leading_top = leading / 2;
+			fs->ascent = ascent + leading_top;
+			fs->decent = natural_decent + leading - leading_top;
 			fs->gap = 0;
 		} else {
+			fs->ascent = ascent;
 			fs->line_height = natural_height;
-			fs->decent = -decent + gap;
+			fs->decent = natural_decent + gap;
 			fs->gap = gap;
 		}
 	}
