@@ -12,6 +12,7 @@
 #define Wrap 8
 #define Display 16
 #define PositionType 32
+#define Overflow 64
 
 #define ENUM(x, what) { YG##x##ToString(YG##x##what), (x) << 16 | (YG##x##what) },
 
@@ -513,6 +514,11 @@ lsetPosition(lua_State *L, YGNodeRef node) {
 }
 
 static void
+lsetOverflow(lua_State *L, YGNodeRef node) {
+	YGNodeStyleSetOverflow(node, getEnum(L, Overflow, "overflow"));
+}
+
+static void
 setPosition(lua_State *L, YGNodeRef node, YGEdge edge) {
 	static const struct set_edge_number setter = {
 		YGNodeStyleSetPosition,
@@ -636,6 +642,7 @@ luaopen_layout_yoga(lua_State *L) {
 		{ "display", lsetDisplay },
 		{ "flex", lsetFlex },
 		{ "position", lsetPosition },
+		{ "overflow", lsetOverflow },
 		{ "top", lsetTop },
 		{ "bottom", lsetBottom },
 		{ "left", lsetLeft },
@@ -678,6 +685,9 @@ luaopen_layout_yoga(lua_State *L) {
 		ENUM(PositionType, Static)
 		ENUM(PositionType, Relative)
 		ENUM(PositionType, Absolute)
+		ENUM(Overflow, Visible)
+		ENUM(Overflow, Hidden)
+		ENUM(Overflow, Scroll)
 	};
 	n = sizeof(estr) / sizeof(estr[0]);
 	lua_createtable(L, n, 0);
