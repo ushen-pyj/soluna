@@ -1,7 +1,10 @@
 import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+import process from 'node:process'
 import { marked } from 'marked'
 
-const readmeUrl = new URL('../../../README.md', import.meta.url)
+const repoRoot = path.resolve(process.cwd(), '..')
+const readmePath = path.join(repoRoot, 'README.md')
 const repoUrl = 'https://github.com/cloudwu/soluna'
 
 function normalizeGithubPath(pathname: string): string {
@@ -52,7 +55,7 @@ function rewriteReadmeLinks(markdown: string, basePath: string): string {
 }
 
 export async function renderReadme(basePath: string): Promise<string> {
-  const readme = await readFile(readmeUrl, 'utf8')
+  const readme = await readFile(readmePath, 'utf8')
   const rewritten = rewriteReadmeLinks(readme, basePath)
   return marked.parse(rewritten) as string
 }
