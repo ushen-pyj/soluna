@@ -467,30 +467,80 @@ struct block_context {
 	int alignment;
 };
 
-struct position {
-	int x;
-	int y;
-	int w;
-	int h;
-	int gap;
+struct layout_style {
 	int ascent;
 	int decent;
+	int gap;
+};
+
+struct line_info {
+	int y;
+	int h;
+	int gap;
+};
+
+struct position {
+	int x;
+	int w;
 	int style;
+	int line;
 };
 
 struct layout {
 	int n;
+	int cap;
 	int width;
 	int height;
 	int top;
 	int text_height;
-	struct position pos[];
+	int style_count;
+	int line_count;
+	struct layout_style styles[];
 };
+
+static inline struct position *
+layout_positions(struct layout *pos) {
+	return (struct position *)(pos->styles + pos->style_count);
+}
+
+static inline struct line_info *
+layout_lines(struct layout *pos) {
+	return (struct line_info *)(layout_positions(pos) + pos->cap);
+}
+
+static inline size_t
+layout_size(int cap, int style_count) {
+	return sizeof(struct layout)
+		+ (size_t)style_count * sizeof(struct layout_style)
+		+ (size_t)cap * sizeof(struct position)
+		+ (size_t)cap * sizeof(struct line_info);
+}
+
+static void
+copy_layout_styles(struct layout *pos, struct styles *styles) {
+	int i;
+	pos->style_count = styles->n;
+	for (i=0;i<styles->n;i++) {
+		pos->styles[i].ascent = styles->s[i].ascent;
+		pos->styles[i].decent = styles->s[i].decent;
+		pos->styles[i].gap = styles->s[i].gap;
+	}
+}
+
+static inline void
+set_position(struct layout *pos, int n, struct block_context *ctx) {
+	struct position *p = &layout_positions(pos)[n];
+	p->x = ctx->x;
+	p->w = 0;
+	p->style = ctx->style;
+	p->line = 0;
+	pos->n = n + 1;
+}
 
 static inline int
 advance(struct layout *pos, struct block_context *ctx, int x) {
 	if (pos && pos->n > 0) {
-		pos->pos[pos->n-1].w = x;
+		layout_positions(pos)[pos->n-1].w = x;
 	}
 	if (x + ctx->x > ctx->width)
 		return 1;
@@ -547,16 +597,21 @@ newline(struct block_context *ctx, struct text_primitive * prim, int n, struct l
 		}
 	}
 	if (pos != NULL) {
-		if (offx > 0) {
+		if (n > from) {
+			struct position *positions = layout_positions(pos);
+			struct line_info *lines = layout_lines(pos);
+			int line = pos->line_count++;
+			lines[line].y = ctx->y;
+			lines[line].h = line_height;
+			lines[line].gap = line_gap;
 			for (i=from;i<n;i++) {
-				pos->pos[i].x += offx;
-				pos->pos[i].h = line_height;
-				pos->pos[i].gap = line_gap;
+				positions[i].line = line;
 			}
-		} else {
+		}
+		if (offx > 0) {
+			struct position *positions = layout_positions(pos);
 			for (i=from;i<n;i++) {
-				pos->pos[i].h = line_height;
-				pos->pos[i].gap = line_gap;
+				positions[i].x += offx;
 			}
 		}
 	}
@@ -654,12 +709,16 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 	struct text_primitive * prim = NULL;
 	struct layout * pos = NULL;
 	if (gen_layout) {
-		pos = (struct layout *)lua_newuserdatauv(L, sizeof(struct layout) + (count+1) * sizeof(struct position), 0);
+		int cap = count + 1;
+		pos = (struct layout *)lua_newuserdatauv(L, layout_size(cap, s->n), 0);
 		pos->n = 0;
+		pos->cap = cap;
 		pos->width = ctx.width;
 		pos->height = ctx.height;
 		pos->text_height = 0;
 		pos->top = 0;
+		pos->line_count = 0;
+		copy_layout_styles(pos, s);
 	} else {
 		buffer = (char *)malloc(count * sizeof(struct text_primitive)+1);
 		prim = (struct text_primitive *)buffer;
@@ -717,16 +776,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 				prim[n].pos.sprite = -material_id;
 			} else {
 				// assert(pos != NULL)
-				struct position *p = &pos->pos[n];
-				p->x = ctx.x;
-				p->y = ctx.y;
-				p->w = 0;
-				p->h = 0;
-				p->gap = 0;
-				p->ascent = ctx.fs->ascent;
-				p->decent = ctx.fs->decent;
-				p->style = ctx.style;
-				pos->n = n + 1;
+				set_position(pos, n, &ctx);
 			}
 			
 			struct font_glyph g, og;
@@ -740,15 +790,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 						prim[n].pos.x = ctx.x * PIXEL_SCALE;
 						prim[n].pos.y = ( ctx.y + dy ) * PIXEL_SCALE;
 					} else {
-						struct position *p = &pos->pos[n];
-						p->x = ctx.x;
-						p->y = ctx.y;
-						p->w = 0;
-						p->h = 0;
-						p->gap = 0;
-						p->ascent = ctx.fs->ascent;
-						p->decent = ctx.fs->decent;
-						p->style = ctx.style;
+						set_position(pos, n, &ctx);
 					}
 					advance(pos, &ctx, g.advance_x);
 				}
@@ -770,15 +812,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 	if (n == 0 && pos) {
 		// no text, set one
 		if (pos) {
-			struct position *p = &pos->pos[0];
-			p->x = 0;
-			p->y = 0;
-			p->w = 0;
-			p->h = 0;
-			p->gap = 0;
-			p->ascent = ctx.fs->ascent;
-			p->decent = ctx.fs->decent;
-			p->style = ctx.style;
+			set_position(pos, 0, &ctx);
 			ctx.line_ascent = ctx.fs->ascent;
 			ctx.line_decent = ctx.fs->decent;
 			ctx.line_height = ctx.fs->ascent + ctx.fs->decent - ctx.fs->gap;
@@ -789,9 +823,10 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 		newline(&ctx, prim, n, pos);
 	}
 	if (pos && n>0) {
-		pos->pos[n] = pos->pos[n-1];
-		pos->pos[n].x = pos->pos[n-1].x + pos->pos[n-1].w;
-		pos->pos[n].w = 0;
+		struct position *positions = layout_positions(pos);
+		positions[n] = positions[n-1];
+		positions[n].x = positions[n-1].x + positions[n-1].w;
+		positions[n].w = 0;
 	}
 	int offy;
 	int valign = ctx.alignment & VALIGNMENT_MASK;
@@ -820,8 +855,9 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 		pos->n = n;
 		if (offy != 0) {
 			int offset = offy / PIXEL_SCALE;
-			for (i=0;i<=n;i++) {
-				pos->pos[i].y += offset;
+			struct line_info *lines = layout_lines(pos);
+			for (i=0;i<pos->line_count;i++) {
+				lines[i].y += offset;
 			}
 			pos->top = offset;
 		}
@@ -872,14 +908,16 @@ ltext_cursor(lua_State *L) {
 	} else if (n > pos->n ) {
 		n = pos->n;
 	}
-	struct position *p = &pos->pos[n];
-	int height = p->ascent + p->decent - p->gap;
+	struct position *p = &layout_positions(pos)[n];
+	struct layout_style *style = &pos->styles[p->style];
+	struct line_info *line = &layout_lines(pos)[p->line];
+	int height = style->ascent + style->decent - style->gap;
 	lua_pushinteger(L, p->x);
-	lua_pushinteger(L, p->y + p->h - height);
+	lua_pushinteger(L, line->y + line->h - height);
 	lua_pushinteger(L, 2);
 	lua_pushinteger(L, height);
 	lua_pushinteger(L, n);
-	lua_pushinteger(L, p->decent);
+	lua_pushinteger(L, style->decent);
 	return 6;
 }
 
@@ -901,11 +939,12 @@ ltext_line_height(lua_State *L) {
 	int height = 0;
 	int bottom = pos->top + pos->text_height;
 	int i;
-	for (i=0;i<n;i++) {
-		struct position *p = &pos->pos[i];
-		int line_height = p->h + p->gap;
-		if (p->y + line_height > bottom) {
-			line_height = bottom - p->y;
+	struct line_info *lines = layout_lines(pos);
+	for (i=0;i<pos->line_count;i++) {
+		struct line_info *line = &lines[i];
+		int line_height = line->h + line->gap;
+		if (line->y + line_height > bottom) {
+			line_height = bottom - line->y;
 		}
 		if (line_height > height) {
 			height = line_height;
@@ -923,16 +962,7 @@ ltext_line_count(lua_State *L) {
 		lua_pushinteger(L, pos->text_height > 0 ? 1 : 0);
 		return 1;
 	}
-	int count = 1;
-	int y = pos->pos[0].y;
-	int i;
-	for (i=1;i<n;i++) {
-		if (pos->pos[i].y != y) {
-			y = pos->pos[i].y;
-			++count;
-		}
-	}
-	lua_pushinteger(L, count);
+	lua_pushinteger(L, pos->line_count);
 	return 1;
 }
 
@@ -951,14 +981,17 @@ set_integer_field(lua_State *L, const char *key, int value) {
 
 static void
 push_line(lua_State *L, struct layout *pos, int start, int finish) {
-	int x0 = pos->pos[start].x;
+	struct position *positions = layout_positions(pos);
+	struct line_info *lines = layout_lines(pos);
+	int x0 = positions[start].x;
 	int x1 = x0;
-	int y = pos->pos[start].y;
+	int y = lines[positions[start].line].y;
 	int y1 = y;
 	int text_bottom = pos->top + pos->text_height;
 	int i;
 	for (i=start;i<finish;i++) {
-		struct position *p = &pos->pos[i];
+		struct position *p = &positions[i];
+		struct line_info *line = &lines[p->line];
 		if (p->x < x0) {
 			x0 = p->x;
 		}
@@ -966,7 +999,7 @@ push_line(lua_State *L, struct layout *pos, int start, int finish) {
 		if (right > x1) {
 			x1 = right;
 		}
-		int bottom = p->y + p->h + p->gap;
+		int bottom = line->y + line->h + line->gap;
 		if (bottom > y1) {
 			y1 = bottom;
 		}
@@ -1006,23 +1039,27 @@ ltext_line(lua_State *L) {
 		set_integer_field(L, "height", pos->text_height);
 		return 1;
 	}
-	int current_line = 1;
-	int start = 0;
-	int y = pos->pos[0].y;
+	int target = line - 1;
+	if (target >= pos->line_count) {
+		lua_pushnil(L);
+		return 1;
+	}
+	int start = -1;
+	int finish = -1;
+	struct position *positions = layout_positions(pos);
 	int i;
-	for (i=1;i<n;i++) {
-		if (pos->pos[i].y != y) {
-			if (current_line == line) {
-				push_line(L, pos, start, i);
-				return 1;
+	for (i=0;i<n;i++) {
+		if (positions[i].line == target) {
+			if (start < 0) {
+				start = i;
 			}
-			++current_line;
-			start = i;
-			y = pos->pos[i].y;
+			finish = i + 1;
+		} else if (start >= 0) {
+			break;
 		}
 	}
-	if (current_line == line) {
-		push_line(L, pos, start, n);
+	if (start >= 0) {
+		push_line(L, pos, start, finish);
 		return 1;
 	}
 	lua_pushnil(L);
@@ -1037,7 +1074,7 @@ ltext_style(lua_State *L) {
 		lua_pushnil(L);
 		return 1;
 	}
-	lua_pushinteger(L, pos->pos[n].style);
+	lua_pushinteger(L, layout_positions(pos)[n].style);
 	return 1;
 }
 
@@ -1055,12 +1092,15 @@ static int
 bsearch_pos(struct layout * pos, int x, int y) {
 	int from = 0;
 	int to = pos->n;
+	struct position *positions = layout_positions(pos);
+	struct line_info *lines = layout_lines(pos);
 	while (from < to) {
 		int mid = from + (to - from) / 2;
-		struct position *p = &pos->pos[mid];
-		if (y < p->y) {
+		struct position *p = &positions[mid];
+		struct line_info *line = &lines[p->line];
+		if (y < line->y) {
 			to = mid;
-		} else if (y >= p->y + p->h + p->gap) {
+		} else if (y >= line->y + line->h + line->gap) {
 			from = mid + 1;
 		} else if (x < p->x) {
 			to = mid;
