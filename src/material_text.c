@@ -307,7 +307,10 @@ count_string(const char *str) {
 	while ((str = utf8_decode(str, &val))) {
 		if (val == 0)
 			break;
-		if (val > 32) {
+		if (val <= 32) {
+			if (val != '\n')
+				++n;
+		} else {
 			if (val == '[') {
 				char c = *str;
 				if (c == '[') {
@@ -498,6 +501,9 @@ struct layout {
 	struct layout_style styles[];
 };
 
+static inline int
+newline(struct block_context *ctx, struct text_primitive * prim, int n, struct layout *pos);
+
 static inline struct position *
 layout_positions(struct layout *pos) {
 	return (struct position *)(pos->styles + pos->style_count);
@@ -554,6 +560,25 @@ advance(struct layout *pos, struct block_context *ctx, int x) {
 	if (height > ctx->line_height)
 		ctx->line_height = height;
 	ctx->x += x;
+	return 0;
+}
+
+static inline int
+advance_space(struct block_context *ctx, struct text_primitive *prim, struct layout *pos, int *n, int advance_x) {
+	if (pos) {
+		set_position(pos, *n, ctx);
+	}
+	if (advance(pos, ctx, advance_x)) {
+		if (newline(ctx, prim, *n, pos))
+			return 1;
+		if (pos) {
+			set_position(pos, *n, ctx);
+		}
+		advance(pos, ctx, advance_x);
+	}
+	if (pos) {
+		++*n;
+	}
 	return 0;
 }
 
@@ -723,11 +748,12 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 		buffer = (char *)malloc(count * sizeof(struct text_primitive)+1);
 		prim = (struct text_primitive *)buffer;
 	}
-	int i;
 	int n = 0;
-	for (i=0;i<count;) {
+	for (;;) {
 		uint32_t val = 0;
 		str = utf8_decode(str, &val);
+		if (str == NULL || val == 0)
+			break;
 		if (val <= 32) {
 			if (val == '\n') {
 				if (ctx.x > ctx.line_width)
@@ -739,11 +765,8 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 				if (font_manager_glyph(mgr, ctx.fs->fontid, ' ', ctx.fs->size, &g, &og) == NULL) {
 					if (ctx.x > ctx.line_width)
 						ctx.line_width = ctx.x;
-					if (advance(pos, &ctx, g.advance_x)) {
-						if (newline(&ctx, prim, n, pos))
-							break;
-						advance(pos, &ctx, g.advance_x);
-					}
+					if (advance_space(&ctx, prim, pos, &n, g.advance_x))
+						break;
 				}
 			}
 		} else {
@@ -803,7 +826,6 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 				}
 				++n;
 			}
-			++i;
 		}
 	}
 	if (ctx.x > ctx.line_width)
@@ -830,6 +852,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 	}
 	int offy;
 	int valign = ctx.alignment & VALIGNMENT_MASK;
+	int i;
 	switch (valign) {
 	case VALIGNMENT_CENTER:
 		offy = (ctx.height - height) / 2 * PIXEL_SCALE;
