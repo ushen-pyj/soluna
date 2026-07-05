@@ -354,7 +354,6 @@ struct font_style {
 	uint32_t color;
 	int fontid;
 	int size;
-	int line_height;
 	// read from font
 	int ascent;
 	int decent;
@@ -385,8 +384,33 @@ get_field(lua_State *L, const char *key, int def) {
 }
 
 static void
+style_getinfo(struct font_manager *mgr, struct font_style *fs, int line_height) {
+	int ascent, decent, gap;
+	font_manager_fontheight(mgr, fs->fontid, fs->size, &ascent, &decent, &gap);
+	if (gap == 0)
+		gap = 1;
+	int natural_decent = -decent;
+	int natural_height = ascent + natural_decent;
+	if (line_height > 0) {
+		if (line_height < natural_height) {
+			line_height = natural_height;
+		}
+		int leading = line_height - natural_height;
+		int leading_top = leading / 2;
+		fs->ascent = ascent + leading_top;
+		fs->decent = natural_decent + leading - leading_top;
+		fs->gap = 0;
+	} else {
+		fs->ascent = ascent;
+		fs->decent = natural_decent + gap;
+		fs->gap = gap;
+	}
+}
+
+static void
 read_style(lua_State *L, int index, struct styles *s, int i) {
 	struct font_style *fs = &s->s[i];
+	int line_height;
 	if (lua_geti(L, index, i+1) != LUA_TTABLE) {
 		luaL_error(L, "Invalid style at %d, need a table", i+1);
 	}
@@ -397,38 +421,9 @@ read_style(lua_State *L, int index, struct styles *s, int i) {
 	if (!(fs->color & 0xff000000))
 		fs->color |= 0xff000000;
 	fs->size = get_field(L, "size", DEFAULT_FONTSIZE);
-	fs->line_height = get_field(L, "line_height", 0);
+	line_height = get_field(L, "line_height", 0);
+	style_getinfo(s->font, fs, line_height);
 	lua_pop(L, 1);
-}
-
-static void
-style_getinfo(struct styles *s) {
-	struct font_manager *mgr = s->font;
-	int i;
-	for (i=0;i<s->n;i++) {
-		int ascent, decent, gap;
-		struct font_style *fs = &s->s[i];
-		font_manager_fontheight(mgr, fs->fontid, fs->size, &ascent, &decent, &gap);
-		if (gap == 0)
-			gap = 1;
-		int natural_decent = -decent;
-		int natural_height = ascent + natural_decent;
-		if (fs->line_height > 0) {
-			if (fs->line_height < natural_height) {
-				fs->line_height = natural_height;
-			}
-			int leading = fs->line_height - natural_height;
-			int leading_top = leading / 2;
-			fs->ascent = ascent + leading_top;
-			fs->decent = natural_decent + leading - leading_top;
-			fs->gap = 0;
-		} else {
-			fs->ascent = ascent;
-			fs->line_height = natural_height;
-			fs->decent = natural_decent + gap;
-			fs->gap = gap;
-		}
-	}
 }
 
 static int
@@ -449,7 +444,6 @@ ltext_styles(lua_State *L) {
 	for (i=0;i<n;i++) {
 		read_style(L, 2, s, i);
 	}
-	style_getinfo(s);
 	if (luaL_newmetatable(L, "SOLUNA_TEXT_STYLES")) {
 		lua_pushvalue(L, -1);
 		lua_setfield(L, -2, "__index");
@@ -477,7 +471,6 @@ struct block_context {
 struct line_info {
 	int y;
 	int h;
-	int gap;
 };
 
 struct position {
@@ -517,6 +510,14 @@ layout_size(int cap) {
 	return sizeof(struct layout)
 		+ (size_t)cap * sizeof(struct position)
 		+ (size_t)cap * sizeof(struct line_info);
+}
+
+static inline int
+layout_line_bottom(struct layout *pos, struct line_info *lines, int line) {
+	if (line + 1 < pos->line_count) {
+		return lines[line + 1].y;
+	}
+	return pos->top + pos->text_height;
 }
 
 static void
@@ -588,7 +589,6 @@ newline(struct block_context *ctx, struct text_primitive * prim, int n, struct l
 	int line_ascent = ctx->line_ascent;
 	int line_decent = ctx->line_decent;
 	int line_height = ctx->line_height;
-	int line_gap = line_ascent + line_decent - line_height;
 	ctx->line_width = 0;
 	ctx->line_height = 0;
 	ctx->line_ascent = 0;
@@ -626,7 +626,6 @@ newline(struct block_context *ctx, struct text_primitive * prim, int n, struct l
 			int line = pos->line_count++;
 			lines[line].y = ctx->y;
 			lines[line].h = line_height;
-			lines[line].gap = line_gap;
 			for (i=from;i<n;i++) {
 				positions[i].line = line;
 			}
@@ -896,9 +895,8 @@ get_styles(lua_State *L, struct styles *tmp) {
 	fs->fontid = fontid;
 	fs->size = lua_tointeger(L, lua_upvalueindex(3));
 	fs->color = lua_tointeger(L, lua_upvalueindex(4));
-	fs->line_height = 0;
 
-	style_getinfo(tmp);
+	style_getinfo(tmp->font, fs, 0);
 	return tmp;
 }
 
@@ -956,15 +954,11 @@ ltext_line_height(lua_State *L) {
 		return 1;
 	}
 	int height = 0;
-	int bottom = pos->top + pos->text_height;
 	int i;
 	struct line_info *lines = layout_lines(pos);
 	for (i=0;i<pos->line_count;i++) {
 		struct line_info *line = &lines[i];
-		int line_height = line->h + line->gap;
-		if (line->y + line_height > bottom) {
-			line_height = bottom - line->y;
-		}
+		int line_height = layout_line_bottom(pos, lines, i) - line->y;
 		if (line_height > height) {
 			height = line_height;
 		}
@@ -1010,7 +1004,6 @@ push_line(lua_State *L, struct layout *pos, int start, int finish) {
 	int i;
 	for (i=start;i<finish;i++) {
 		struct position *p = &positions[i];
-		struct line_info *line = &lines[p->line];
 		if (p->x < x0) {
 			x0 = p->x;
 		}
@@ -1018,7 +1011,7 @@ push_line(lua_State *L, struct layout *pos, int start, int finish) {
 		if (right > x1) {
 			x1 = right;
 		}
-		int bottom = line->y + line->h + line->gap;
+		int bottom = layout_line_bottom(pos, lines, p->line);
 		if (bottom > y1) {
 			y1 = bottom;
 		}
@@ -1119,7 +1112,7 @@ bsearch_pos(struct layout * pos, int x, int y) {
 		struct line_info *line = &lines[p->line];
 		if (y < line->y) {
 			to = mid;
-		} else if (y >= line->y + line->h + line->gap) {
+		} else if (y >= layout_line_bottom(pos, lines, p->line)) {
 			from = mid + 1;
 		} else if (x < p->x) {
 			to = mid;
