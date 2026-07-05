@@ -21,6 +21,7 @@ int luaopen_material_default(lua_State *L);
 int luaopen_material_text(lua_State *L);
 int luaopen_material_quad(lua_State *L);
 int luaopen_material_mask(lua_State *L);
+int luaopen_material_clip(lua_State *L);
 int luaopen_material_blit(lua_State *L);
 int luaopen_material_external(lua_State *L);
 int luaopen_soluna_app(lua_State *L);
@@ -53,6 +54,7 @@ void soluna_embed(lua_State* L) {
 		{ "soluna.material.text", luaopen_material_text },
 		{ "soluna.material.quad", luaopen_material_quad },
 		{ "soluna.material.mask", luaopen_material_mask },
+		{ "soluna.material.clip", luaopen_material_clip },
 		{ "soluna.material.blit", luaopen_material_blit },
 		{ "soluna.material.ext", luaopen_material_external },
 		{ "soluna.datalist", luaopen_datalist },
