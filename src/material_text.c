@@ -450,6 +450,11 @@ ltext_styles(lua_State *L) {
 		read_style(L, 2, s, i);
 	}
 	style_getinfo(s);
+	if (luaL_newmetatable(L, "SOLUNA_TEXT_STYLES")) {
+		lua_pushvalue(L, -1);
+		lua_setfield(L, -2, "__index");
+	}
+	lua_setmetatable(L, -2);
 	return 1;
 }
 
@@ -1200,20 +1205,24 @@ ltext_block(lua_State *L) {
 	if (material_id <= 0) {
 		return luaL_error(L, "Text material is not registered");
 	}
-	void * font_mgr = lua_touserdata(L, 1);
+	void * font_mgr = NULL;
 	int styles_arg = 0;
 	int fontid = 0;
 	int fontsize = 0;
 	uint32_t color = 0;
 	uint32_t alignment = 0;
-	
-	if (lua_type(L, 2) == LUA_TSTRING) {
-		// font_mgr is struct styles
-		luaL_checktype(L, 1, LUA_TUSERDATA);
+
+	if (luaL_testudata(L, 1, "SOLUNA_TEXT_STYLES")) {
+		font_mgr = lua_touserdata(L, 1);
 		styles_arg = 1;
-		alignment = parse_alignment(L, 2);
+		if (lua_type(L, 2) == LUA_TSTRING) {
+			alignment = parse_alignment(L, 2);
+		} else {
+			luaL_opt(L, luaL_checkstring, 2, NULL);
+		}
 	} else {
 		luaL_checktype(L, 1, LUA_TLIGHTUSERDATA);
+		font_mgr = lua_touserdata(L, 1);
 		fontid = luaL_checkinteger(L, 2);
 		fontsize = luaL_optinteger(L, 3, DEFAULT_FONTSIZE);
 		color = luaL_optinteger(L, 4, 0xff000000);
