@@ -461,7 +461,6 @@ ltext_styles(lua_State *L) {
 struct block_context {
 	struct styles *s;
 	struct font_style *fs;
-	int style;
 	int width;
 	int height;
 	int x;
@@ -473,12 +472,6 @@ struct block_context {
 	int line_decent;
 	int line_height;
 	int alignment;
-};
-
-struct layout_style {
-	int ascent;
-	int decent;
-	int gap;
 };
 
 struct line_info {
@@ -501,9 +494,9 @@ struct layout {
 	int height;
 	int top;
 	int text_height;
-	int style_count;
 	int line_count;
-	struct layout_style styles[];
+	struct font_style *styles;
+	struct font_style style;
 };
 
 static inline int
@@ -511,7 +504,7 @@ newline(struct block_context *ctx, struct text_primitive * prim, int n, struct l
 
 static inline struct position *
 layout_positions(struct layout *pos) {
-	return (struct position *)(pos->styles + pos->style_count);
+	return (struct position *)(pos + 1);
 }
 
 static inline struct line_info *
@@ -520,21 +513,21 @@ layout_lines(struct layout *pos) {
 }
 
 static inline size_t
-layout_size(int cap, int style_count) {
+layout_size(int cap) {
 	return sizeof(struct layout)
-		+ (size_t)style_count * sizeof(struct layout_style)
 		+ (size_t)cap * sizeof(struct position)
 		+ (size_t)cap * sizeof(struct line_info);
 }
 
 static void
-copy_layout_styles(struct layout *pos, struct styles *styles) {
-	int i;
-	pos->style_count = styles->n;
-	for (i=0;i<styles->n;i++) {
-		pos->styles[i].ascent = styles->s[i].ascent;
-		pos->styles[i].decent = styles->s[i].decent;
-		pos->styles[i].gap = styles->s[i].gap;
+set_layout_styles(lua_State *L, struct layout *pos, struct styles *styles, int external) {
+	if (external) {
+		pos->styles = styles->s;
+		lua_pushvalue(L, lua_upvalueindex(1));
+		lua_setiuservalue(L, -2, 1);
+	} else {
+		pos->style = styles->s[0];
+		pos->styles = &pos->style;
 	}
 }
 
@@ -543,7 +536,7 @@ set_position(struct layout *pos, int n, struct block_context *ctx) {
 	struct position *p = &layout_positions(pos)[n];
 	p->x = ctx->x;
 	p->w = 0;
-	p->style = ctx->style;
+	p->style = (int)(ctx->fs - ctx->s->s);
 	p->line = 0;
 	pos->n = n + 1;
 }
@@ -688,7 +681,6 @@ parse_bracket(struct block_context *ctx, const char *str, int *icon) {
 		if (style < 0 || style >=n) {
 			style = 0;
 		}
-		ctx->style = style;
 		ctx->fs = &ctx->s->s[style];
 		ctx->color = ctx->fs->color;
 	} else if ((hex = tohex(c)) >= 0) {
@@ -705,7 +697,6 @@ parse_bracket(struct block_context *ctx, const char *str, int *icon) {
 			color |= 0xff000000;
 		ctx->color = color;
 	} else if (c == 'n') {
-		ctx->style = 0;
 		ctx->fs = &ctx->s->s[0];
 		ctx->color = ctx->fs->color;
 	}
@@ -714,13 +705,12 @@ parse_bracket(struct block_context *ctx, const char *str, int *icon) {
 }
 
 static int
-ltext_(lua_State *L, struct styles *s, int gen_layout) {
+ltext_(lua_State *L, struct styles *s, int gen_layout, int external) {
 	const char * str = luaL_checkstring(L, 1);
 	int count = count_string(str);
 	struct block_context ctx;
 	ctx.s = s;
 	ctx.fs = &s->s[0];
-	ctx.style = 0;
 	ctx.width = luaL_optinteger(L, 2, MAX_WIDTH);
 	ctx.height = luaL_optinteger(L, 3, MAX_HEIGHT);
 
@@ -740,7 +730,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 	struct layout * pos = NULL;
 	if (gen_layout) {
 		int cap = count + 1;
-		pos = (struct layout *)lua_newuserdatauv(L, layout_size(cap, s->n), 0);
+		pos = (struct layout *)lua_newuserdatauv(L, layout_size(cap), external ? 1 : 0);
 		pos->n = 0;
 		pos->cap = cap;
 		pos->width = ctx.width;
@@ -748,7 +738,7 @@ ltext_(lua_State *L, struct styles *s, int gen_layout) {
 		pos->text_height = 0;
 		pos->top = 0;
 		pos->line_count = 0;
-		copy_layout_styles(pos, s);
+		set_layout_styles(L, pos, s, external);
 	} else {
 		buffer = (char *)malloc(count * sizeof(struct text_primitive)+1);
 		prim = (struct text_primitive *)buffer;
@@ -915,13 +905,14 @@ get_styles(lua_State *L, struct styles *tmp) {
 static int
 ltext(lua_State *L) {
 	struct styles tmp;
-	return ltext_(L, get_styles(L, &tmp), 0);
+	return ltext_(L, get_styles(L, &tmp), 0, 0);
 }
 
 static int
 ltext_layout(lua_State *L) {
 	struct styles tmp;
-	ltext_(L, get_styles(L, &tmp), 1);
+	int external = luaL_testudata(L, lua_upvalueindex(1), "SOLUNA_TEXT_STYLES") != NULL;
+	ltext_(L, get_styles(L, &tmp), 1, external);
 	lua_pushvalue(L, lua_upvalueindex(6));
 	lua_setmetatable(L, -2);
 	return 1;
@@ -937,7 +928,7 @@ ltext_cursor(lua_State *L) {
 		n = pos->n;
 	}
 	struct position *p = &layout_positions(pos)[n];
-	struct layout_style *style = &pos->styles[p->style];
+	struct font_style *style = &pos->styles[p->style];
 	struct line_info *line = &layout_lines(pos)[p->line];
 	int height = style->ascent + style->decent - style->gap;
 	lua_pushinteger(L, p->x);
