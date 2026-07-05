@@ -287,6 +287,12 @@ font_manager_touch_unsafe(struct font_manager *F, int font, int codepoint, struc
 		stbtt_GetFontVMetrics(fi, &ascent, &descent, &lineGap);
 	}
 	stbtt_GetCodepointHMetrics(fi, codepoint, &advance, &lsb);
+	if (is_space_codepoint(codepoint) && advance <= 0) {
+		int fallback_advance;
+		int fallback_lsb;
+		stbtt_GetCodepointHMetrics(fi, 'n', &fallback_advance, &fallback_lsb);
+		advance = fallback_advance > 0 ? fallback_advance : ORIGINAL_SIZE / 2;
+	}
 	stbtt_GetCodepointBitmapBox(fi, codepoint, scale, scale, &ix0, &iy0, &ix1, &iy1);
 
 	glyph->w = ix1-ix0 + DISTANCE_OFFSET * 2;

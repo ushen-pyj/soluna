@@ -292,6 +292,12 @@ lset_mouse_cursor(lua_State *L) {
 static int
 lset_clipboard_text(lua_State *L) {
 	const char *text = luaL_checkstring(L, 1);
+#if defined(__EMSCRIPTEN_PTHREADS__)
+	if (!emscripten_is_main_browser_thread()) {
+		emscripten_async_run_in_main_runtime_thread(EM_FUNC_SIG_VI, sapp_set_clipboard_string, text);
+		return 0;
+	}
+#endif
 	sapp_set_clipboard_string(text);
 	return 0;
 }
