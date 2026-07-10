@@ -47,7 +47,8 @@ local fontid = font_init()
 local fontcobj = font.cobj()
 
 local callback = {}
-local WIDTH <const> = 200
+local WIDTH_MIN <const> = 120
+local WIDTH_MAX <const> = 300
 local HEIGHT <const> = 200
 local VIEWPORT_MIN <const> = 48
 local VIEWPORT_MAX <const> = HEIGHT
@@ -60,7 +61,9 @@ function callback.window_resize(w, h)
 	screen_h = h
 end
 
-local TEXT <const> = "[004000]Hello[n], 这个句子中有[s1]大字[n]，也有[s2]小字[n]。这句话会在文本区居中。"
+local TEXT <const> = [[[004000][w1]Hello[w][n], 这个句子中有[s1]大字[n]，也有[s2]小字[n]。这句话会在文本区居中
+ 这里追加一段 [w2]English[w] 和中文混排，[w3]no-break[w] [w4]words[w] 会随着宽度变化整体换行。
+ [w5]超长不可分割分组会在比整行更宽时退回逐字换行[w]。]]
 -- size 32; color 0; alignment center
 -- local block, layout = mattext.block(fontcobj, fontid, 32, 0, "CV")
 local function text_block()
@@ -73,10 +76,9 @@ local function text_block()
 end
 
 local block, layout = text_block()
--- Verify block closures keep the local styles object alive.
-collectgarbage "collect"
-local label = block(TEXT, WIDTH, HEIGHT)
-local label_layout = layout(TEXT, WIDTH, HEIGHT)
+local label = nil
+local label_layout = nil
+local label_width = 0
 
 local cursor_pos = 0
 local selection_anchor = nil
@@ -88,8 +90,24 @@ local function viewport_height(count)
 	return math.floor(VIEWPORT_MIN + (VIEWPORT_MAX - VIEWPORT_MIN) * t)
 end
 
-local function position()
-	local x = (screen_w - WIDTH) / 2
+local function viewport_width(count)
+	local t = (math.sin(count * 0.018 + 1.3) + 1) * 0.5
+	return math.floor(WIDTH_MIN + (WIDTH_MAX - WIDTH_MIN) * t)
+end
+
+local function update_label(width)
+	if width == label_width then
+		return
+	end
+	label_width = width
+	label = block(TEXT, width, HEIGHT)
+	label_layout = layout(TEXT, width, HEIGHT)
+end
+
+update_label(WIDTH_MAX)
+
+local function position(width)
+	local x = (screen_w - width) / 2
 	local y = (screen_h - HEIGHT) / 2
 	return x, y
 end
@@ -142,10 +160,12 @@ local function draw_selection(x, y)
 end
 
 function callback.frame(count)
-	local x, y = position()
 	local clip_h = viewport_height(count)
-	batch:add(matquad.quad(WIDTH, clip_h, 0x400000ff), x, y)
-	batch:add(matclip.rect(WIDTH + CLIP_BLEED * 2, clip_h), x - CLIP_BLEED, y)
+	local width = viewport_width(count)
+	update_label(width)
+	local x, y = position(width)
+	batch:add(matquad.quad(width, clip_h, 0x400000ff), x, y)
+	batch:add(matclip.rect(width + CLIP_BLEED * 2, clip_h), x - CLIP_BLEED, y)
 	draw_selection(x, y)
 	batch:add(label, x, y)
 	-- cursor
@@ -172,7 +192,7 @@ local mouse_x = 0
 local mouse_y = 0
 
 local function hit_text(x, y)
-	local ox, oy = position()
+	local ox, oy = position(label_width)
 	return label_layout:hit_test(x - ox, y - oy)
 end
 

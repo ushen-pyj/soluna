@@ -101,12 +101,17 @@ end
 ---Text material module.
 ---
 ---Tagged text stream 支持 `[i42]` icon、`[hex]` 临时颜色、`[sN]` style 切换、
----`[s]` 回到 style 0，以及 `[[` 输出字面量 `[`。`[sN]` 中的 `N` 是
----0-based style id，Lua style 数组第一项对应 style 0。
+---`[s]` 回到 style 0、`[wN]` / `[w]` 标记不可拆分换行组，以及 `[[`
+---输出字面量 `[`。`[sN]` 中的 `N` 是 0-based style id，Lua style 数组
+---第一项对应 style 0。`[wN]` 中的 `N` 是调用方自定义的正整数 group id；
+---group 本身比行宽更宽时会退回普通逐字换行。
 ---
 ---Tagged text streams support `[i42]` icons, `[hex]` temporary colors, `[sN]`
----style switching, `[s]` reset to style 0, and `[[` for a literal `[`.
----`N` in `[sN]` is a 0-based style id. The first Lua style entry is style 0.
+---style switching, `[s]` reset to style 0, `[wN]` / `[w]` no-break wrap
+---groups, and `[[` for a literal `[`. `N` in `[sN]` is a 0-based style id.
+---The first Lua style entry is style 0. `N` in `[wN]` is a caller-defined
+---positive group id. A group wider than the line falls back to normal
+---per-character wrapping.
 ---@class soluna.material.text
 local mattext = {}
 

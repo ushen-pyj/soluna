@@ -658,7 +658,7 @@ tohex(char c) {
 }
 
 static const char *
-parse_bracket(struct block_context *ctx, const char *str, int *icon) {
+parse_bracket(struct block_context *ctx, const char *str, int *icon, int *group) {
 	char c = *str;
 	int hex = -1;
 	if (c == 'i') {
@@ -698,9 +698,114 @@ parse_bracket(struct block_context *ctx, const char *str, int *icon) {
 	} else if (c == 'n') {
 		ctx->fs = &ctx->s->s[0];
 		ctx->color = ctx->fs->color;
+	} else if (c == 'w') {
+		++str;
+		int word_group = 0;
+		while (*str >= '0' && *str <= '9') {
+			word_group = word_group * 10 + (*str - '0');
+			++str;
+		}
+		*group = word_group;
 	}
 	// todo: other command
 	return skip_bracket(str);
+}
+
+enum text_token_type {
+	TEXT_TOKEN_END,
+	TEXT_TOKEN_GROUP,
+	TEXT_TOKEN_NEWLINE,
+	TEXT_TOKEN_SPACE,
+	TEXT_TOKEN_GLYPH,
+};
+
+struct text_token {
+	enum text_token_type type;
+	int advance_x;
+	int dy;
+	int codepoint;
+	int font;
+};
+
+static const char *
+next_text_token(const char *str, struct block_context *ctx, int *group,
+	struct text_token *token) {
+	struct font_manager *mgr = ctx->s->font;
+	for (;;) {
+		uint32_t val = 0;
+		str = utf8_decode(str, &val);
+		if (str == NULL || val == 0) {
+			token->type = TEXT_TOKEN_END;
+			return str;
+		}
+		if (val <= 32) {
+			if (val == '\n') {
+				token->type = TEXT_TOKEN_NEWLINE;
+				return str;
+			}
+			struct font_glyph g, og;
+			if (font_manager_glyph(mgr, ctx->fs->fontid, ' ', ctx->fs->size, &g, &og) == NULL) {
+				token->type = TEXT_TOKEN_SPACE;
+				token->advance_x = g.advance_x;
+				return str;
+			}
+			continue;
+		}
+
+		int icon = 0;
+		if (val == '[') {
+			if (*str != '[') {
+				int previous_group = *group;
+				str = parse_bracket(ctx, str, &icon, group);
+				if (*group != previous_group) {
+					token->type = TEXT_TOKEN_GROUP;
+					return str;
+				}
+				if (!icon)
+					continue;
+			} else {
+				++str;
+			}
+		}
+
+		int codepoint = val;
+		int font = ctx->fs->fontid;
+		int dy = 0;
+		if (icon > 0) {
+			codepoint = icon - 1;
+			font = FONT_ICON;
+			dy = -ctx->fs->ascent;
+		}
+		struct font_glyph g, og;
+		if (font_manager_glyph(mgr, font, codepoint, ctx->fs->size, &g, &og) == NULL) {
+			token->type = TEXT_TOKEN_GLYPH;
+			token->advance_x = g.advance_x;
+			token->dy = dy;
+			token->codepoint = codepoint;
+			token->font = font;
+			return str;
+		}
+	}
+}
+
+static int
+measure_word_group(const char *str, struct block_context *ctx, int group) {
+	struct block_context probe = *ctx;
+	int current_group = group;
+	int width = 0;
+	for (;;) {
+		struct text_token token;
+		str = next_text_token(str, &probe, &current_group, &token);
+		if (token.type == TEXT_TOKEN_END || token.type == TEXT_TOKEN_GROUP ||
+			token.type == TEXT_TOKEN_NEWLINE)
+			break;
+		if (token.type == TEXT_TOKEN_SPACE || token.type == TEXT_TOKEN_GLYPH) {
+			width += token.advance_x;
+			if (width > probe.width)
+				break;
+		}
+	}
+	return width;
 }
 
 static int
@@ -713,7 +818,6 @@ ltext_(lua_State *L, struct styles *s, int gen_layout, int external) {
 	ctx.width = luaL_optinteger(L, 2, MAX_WIDTH);
 	ctx.height = luaL_optinteger(L, 3, MAX_HEIGHT);
 
-	struct font_manager *mgr = s->font;
 	ctx.x = 0;
 	ctx.color = s->s[0].color;
 	ctx.y = 0;
@@ -724,7 +828,6 @@ ltext_(lua_State *L, struct styles *s, int gen_layout, int external) {
 	ctx.line_height = 0;
 	ctx.alignment = lua_tointeger(L, lua_upvalueindex(5));
 
-	char * buffer = NULL;
 	struct text_primitive * prim = NULL;
 	struct layout * pos = NULL;
 	if (gen_layout) {
@@ -739,88 +842,76 @@ ltext_(lua_State *L, struct styles *s, int gen_layout, int external) {
 		pos->line_count = 0;
 		set_layout_styles(L, pos, s, external);
 	} else {
-		buffer = (char *)malloc(count * sizeof(struct text_primitive)+1);
-		prim = (struct text_primitive *)buffer;
+		prim = (struct text_primitive *)malloc((size_t)count * sizeof(*prim) + 1);
+		if (prim == NULL)
+			return luaL_error(L, "Out of memory");
 	}
 	int n = 0;
+	int group = 0;
 	for (;;) {
-		uint32_t val = 0;
-		str = utf8_decode(str, &val);
-		if (str == NULL || val == 0)
+		struct text_token token;
+		str = next_text_token(str, &ctx, &group, &token);
+		if (token.type == TEXT_TOKEN_END)
 			break;
-		if (val <= 32) {
-			if (val == '\n') {
-				if (ctx.x > ctx.line_width)
-					ctx.line_width = ctx.x;
-				if (newline(&ctx, prim, n, pos))
-					break;
-			} else {
-				struct font_glyph g, og;
-				if (font_manager_glyph(mgr, ctx.fs->fontid, ' ', ctx.fs->size, &g, &og) == NULL) {
+		if (token.type == TEXT_TOKEN_GROUP) {
+			if (group > 0 && ctx.x > 0) {
+				int group_width = measure_word_group(str, &ctx, group);
+				if (group_width <= ctx.width &&
+					ctx.x + group_width > ctx.width) {
 					if (ctx.x > ctx.line_width)
 						ctx.line_width = ctx.x;
-					if (advance_space(&ctx, prim, pos, &n, g.advance_x))
-						break;
-				}
-			}
-		} else {
-			int icon = 0;
-			if (val == '[') {
-				if (*str != '[') {
-					str = parse_bracket(&ctx, str, &icon);
-					if (!icon) {
-						continue;
-					}
-				} else {
-					++str;
-				}
-			}
-			int dy = 0;
-			int codepoint = val;
-			int font = ctx.fs->fontid;
-			
-			if (icon > 0) {
-				codepoint = icon -1;
-				font = FONT_ICON;
-				
-				dy = - ctx.fs->ascent;
-			}
-			
-			if (prim) {
-				prim[n].pos.x = ctx.x * PIXEL_SCALE;
-				prim[n].pos.y = ( ctx.y + dy ) * PIXEL_SCALE;
-				prim[n].pos.sr = 0;
-				prim[n].pos.sprite = -material_id;
-			} else {
-				// assert(pos != NULL)
-				set_position(pos, n, &ctx);
-			}
-			
-			struct font_glyph g, og;
-			if (font_manager_glyph(mgr, font, codepoint, ctx.fs->size, &g, &og) == NULL) {
-				if (ctx.x > ctx.line_width)
-					ctx.line_width = ctx.x;
-				if (advance(pos, &ctx, g.advance_x)) {
 					if (newline(&ctx, prim, n, pos))
 						break;
-					if (prim) {
-						prim[n].pos.x = ctx.x * PIXEL_SCALE;
-						prim[n].pos.y = ( ctx.y + dy ) * PIXEL_SCALE;
-					} else {
-						set_position(pos, n, &ctx);
-					}
-					advance(pos, &ctx, g.advance_x);
 				}
-				if (prim) {
-					prim[n].u.text.header.sprite = -1;
-					prim[n].u.text.codepoint = codepoint;
-					prim[n].u.text.font = font;
-					prim[n].u.text.size = ctx.fs->size;
-					prim[n].u.text.color = ctx.color;
-				}
-				++n;
 			}
+			continue;
 		}
+		if (token.type == TEXT_TOKEN_NEWLINE) {
+			if (ctx.x > ctx.line_width)
+				ctx.line_width = ctx.x;
+			if (newline(&ctx, prim, n, pos))
+				break;
+			continue;
+		}
+		if (token.type == TEXT_TOKEN_SPACE) {
+			if (ctx.x > ctx.line_width)
+				ctx.line_width = ctx.x;
+			if (advance_space(&ctx, prim, pos, &n, token.advance_x))
+				break;
+			continue;
+		}
+
+		if (prim) {
+			prim[n].pos.x = ctx.x * PIXEL_SCALE;
+			prim[n].pos.y = (ctx.y + token.dy) * PIXEL_SCALE;
+			prim[n].pos.sr = 0;
+			prim[n].pos.sprite = -material_id;
+		} else {
+			// assert(pos != NULL)
+			set_position(pos, n, &ctx);
+		}
+
+		if (ctx.x > ctx.line_width)
+			ctx.line_width = ctx.x;
+		if (advance(pos, &ctx, token.advance_x)) {
+			if (newline(&ctx, prim, n, pos))
+				break;
+			if (prim) {
+				prim[n].pos.x = ctx.x * PIXEL_SCALE;
+				prim[n].pos.y = (ctx.y + token.dy) * PIXEL_SCALE;
+			} else {
+				set_position(pos, n, &ctx);
+			}
+			advance(pos, &ctx, token.advance_x);
+		}
+		if (prim) {
+			prim[n].u.text.header.sprite = -1;
+			prim[n].u.text.codepoint = token.codepoint;
+			prim[n].u.text.font = token.font;
+			prim[n].u.text.size = ctx.fs->size;
+			prim[n].u.text.color = ctx.color;
+		}
+		++n;
 	}
 	if (ctx.x > ctx.line_width)
 		ctx.line_width = ctx.x;
@@ -864,7 +955,8 @@ ltext_(lua_State *L, struct styles *s, int gen_layout, int external) {
 				prim[i].pos.y += offy;
 			}
 		}
-		lua_pushexternalstring(L, buffer, n * sizeof(struct text_primitive), free_primitive, NULL);
+		lua_pushexternalstring(L, (char *)prim,
+			n * sizeof(struct text_primitive), free_primitive, NULL);
 		lua_pushinteger(L, height);
 		return 2;
 	} else {
